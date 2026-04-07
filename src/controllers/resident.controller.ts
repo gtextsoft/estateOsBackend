@@ -83,16 +83,24 @@ export async function createIncident(req: Request, res: Response) {
   const resident = await Resident.findById(residentId);
   if (!resident) return res.status(404).json({ error: "Resident not found" });
 
-  const { title, severity, description } = req.body as { title: string; severity: any; description?: string };
+  const { title, severity, description, incidentType, attachments } = req.body as {
+    title: string;
+    severity: any;
+    description?: string;
+    incidentType?: string;
+    attachments?: string[];
+  };
 
   const incident = await Incident.create({
     residentId: resident._id,
     title,
     reporter: resident.name,
+    incidentType: incidentType?.trim() || undefined,
     severity,
     status: "Open",
     timeLabel: "Just now",
     description,
+    attachments: Array.isArray(attachments) ? attachments.filter((u) => typeof u === "string" && u.trim()) : [],
   });
 
   // Create first incident update timeline entry (optional).
@@ -159,5 +167,12 @@ export async function listMyNotifications(req: Request, res: Response) {
     .sort({ createdAt: -1 })
     .limit(200);
   return res.json({ ok: true, notifications: notifs });
+}
+
+export async function getMyProfile(req: Request, res: Response) {
+  const user = (req as any).user as { id: string; role: Role };
+  const r = await Resident.findById(user.id);
+  if (!r) return res.status(404).json({ error: "Resident not found" });
+  return res.json({ ok: true, resident: r });
 }
 

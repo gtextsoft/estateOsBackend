@@ -1,10 +1,39 @@
-import { GuestPass, Resident, SecurityEvent, SecurityGate, SecurityPresence } from "../models/index";
+import {
+  BlacklistEntry,
+  GuestPass,
+  Notification,
+  Resident,
+  SecurityEvent,
+  SecurityGate,
+  SecurityPresence,
+} from "../models/index";
+import type { Types } from "mongoose";
 import { extractCodeFromQrPayload } from "./qr.service";
+import { isSameLocalCalendarDay, isWithinServiceWindow } from "./passTimeWindow";
 
 export type SecurityGateId = string;
 
 export type SecurityScanAction = "entry" | "exit" | "auto";
 export type SecurityEventType = "entry" | "exit" | "patrol" | "access_denied" | "system";
+
+async function notifyGuestEntry(input: {
+  residentId: unknown;
+  guestName: string;
+  gateName: string;
+  guestPassId: unknown;
+  gateObjectId: unknown;
+}) {
+  const now = new Date();
+  await Notification.create({
+    recipientRole: "resident",
+    recipientId: input.residentId as Types.ObjectId,
+    type: "visitor",
+    message: `Your guest ${input.guestName} entered ${input.gateName}.`,
+    timeLabel: now.toLocaleString(),
+    read: false,
+    meta: { guestPassId: input.guestPassId, gateId: input.gateObjectId },
+  });
+}
 
 export async function scanBySubjectCode(input: {
   rawQrPayload: string;
@@ -27,6 +56,26 @@ export async function scanBySubjectCode(input: {
 
   const action = resolveAction({ inputAction: input.action ?? "auto", inside });
 
+  const idNorm = subjectCode.trim().toUpperCase();
+  const bl = await BlacklistEntry.findOne({
+    identifier: idNorm,
+    active: true,
+    $or: [{ expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: new Date() } }],
+  });
+  if (bl) {
+    const ev = await SecurityEvent.create({
+      gateId: gate._id,
+      gateName: gate.name,
+      type: "access_denied",
+      time: new Date(),
+      subjectType: "unknown",
+      subjectCode,
+      action,
+      message: `Access denied: Blocked list — ${bl.reason}`,
+    });
+    return { ok: false, event: ev };
+  }
+
   // Unknown subject => deny
   if (!pass && !resident) {
     const ev = await SecurityEvent.create({
@@ -41,6 +90,8 @@ export async function scanBySubjectCode(input: {
     });
     return { ok: false, event: ev };
   }
+
+  const now = new Date();
 
   // Guest pass rules
   if (pass) {
@@ -57,9 +108,75 @@ export async function scanBySubjectCode(input: {
         residentId: pass.residentId,
         guestPassId: pass._id,
         action: "entry",
-        message: pass.status === "revoked" ? `Access denied: ${pass.guestName} pass is revoked` : `Access denied: ${pass.guestName} pass is pending`,
+        message:
+          pass.status === "revoked"
+            ? `Access denied: ${pass.guestName} pass is revoked`
+            : `Access denied: ${pass.guestName} pass is pending`,
       });
       return { ok: false, event: ev };
+    }
+
+    // Single-use: deny re-entry after consumed
+    if (action === "entry" && pass.status === "used") {
+      const ev = await SecurityEvent.create({
+        gateId: gate._id,
+        gateName: gate.name,
+        type: "access_denied",
+        time: new Date(),
+        subjectType: "guest_pass",
+        subjectCode,
+        subjectName: pass.guestName,
+        residentId: pass.residentId,
+        guestPassId: pass._id,
+        action: "entry",
+        message: `Access denied: ${pass.guestName} single-use pass already used`,
+      });
+      return { ok: false, event: ev };
+    }
+
+    // Scheduled day for single/service (when date is set)
+    if (
+      action === "entry" &&
+      (pass.passType === "single" || pass.passType === "service") &&
+      pass.date?.trim() &&
+      !isSameLocalCalendarDay(pass.date, now)
+    ) {
+      const ev = await SecurityEvent.create({
+        gateId: gate._id,
+        gateName: gate.name,
+        type: "access_denied",
+        time: new Date(),
+        subjectType: "guest_pass",
+        subjectCode,
+        subjectName: pass.guestName,
+        residentId: pass.residentId,
+        guestPassId: pass._id,
+        action: "entry",
+        message: `Access denied: ${pass.guestName} pass not valid on this date`,
+      });
+      return { ok: false, event: ev };
+    }
+
+    // Service window (entry only)
+    if (action === "entry" && pass.passType === "service") {
+      if (
+        !isWithinServiceWindow(now, pass.date ?? undefined, pass.timeStart ?? undefined, pass.timeEnd ?? undefined)
+      ) {
+        const ev = await SecurityEvent.create({
+          gateId: gate._id,
+          gateName: gate.name,
+          type: "access_denied",
+          time: new Date(),
+          subjectType: "guest_pass",
+          subjectCode,
+          subjectName: pass.guestName,
+          residentId: pass.residentId,
+          guestPassId: pass._id,
+          action: "entry",
+          message: `Access denied: ${pass.guestName} outside service hours`,
+        });
+        return { ok: false, event: ev };
+      }
     }
 
     // Already inside logic
@@ -108,6 +225,20 @@ export async function scanBySubjectCode(input: {
         : `${pass ? pass.guestName : resident?.name ?? "Resident"} exit recorded`,
   });
 
+  if (pass && action === "entry" && pass.passType === "single") {
+    await GuestPass.findByIdAndUpdate(pass._id, { status: "used" });
+  }
+
+  if (pass && action === "entry" && ev.type === "entry") {
+    await notifyGuestEntry({
+      residentId: pass.residentId,
+      guestName: pass.guestName,
+      gateName: gate.name,
+      guestPassId: pass._id,
+      gateObjectId: gate._id,
+    });
+  }
+
   return { ok: true, event: ev };
 }
 
@@ -146,4 +277,3 @@ async function upsertPresence(input: {
 
   return next;
 }
-

@@ -6,6 +6,14 @@ export type GuestPassStatus = "active" | "used" | "pending" | "revoked";
 export type GuestPassType = "single" | "service" | "permanent";
 export type IncidentSeverity = "Low" | "Medium" | "High";
 export type IncidentStatus = "Open" | "Investigating" | "In Progress" | "Resolved";
+export type IncidentType =
+  | "theft"
+  | "dispute"
+  | "breach"
+  | "noise"
+  | "property_damage"
+  | "medical"
+  | "other";
 export type PaymentStatus = "Paid" | "Pending" | "Overdue";
 
 // Users
@@ -25,6 +33,8 @@ const residentSchema = new Schema(
     code: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
     unit: { type: String, required: true },
+    building: { type: String },
+    block: { type: String },
     email: { type: String, required: true },
     phone: { type: String },
     status: { type: String, enum: ["Active", "Pending", "Inactive"], default: "Active", index: true },
@@ -63,10 +73,26 @@ const incidentSchema = new Schema(
     residentId: { type: Schema.Types.ObjectId, ref: "Resident" },
     title: { type: String, required: true },
     reporter: { type: String, required: true },
+    incidentType: {
+      type: String,
+      enum: ["theft", "dispute", "breach", "noise", "property_damage", "medical", "other"],
+    },
     severity: { type: String, enum: ["Low", "Medium", "High"], required: true },
     status: { type: String, enum: ["Open", "Investigating", "In Progress", "Resolved"], required: true, index: true },
     timeLabel: { type: String },
     description: { type: String },
+    attachments: { type: [String], default: [] },
+  },
+  { timestamps: true },
+);
+
+// Blacklist (blocked pass/resident codes at the gate)
+const blacklistEntrySchema = new Schema(
+  {
+    identifier: { type: String, required: true, index: true },
+    reason: { type: String, required: true },
+    active: { type: Boolean, default: true, index: true },
+    expiresAt: { type: Date },
   },
   { timestamps: true },
 );
@@ -183,5 +209,5 @@ export const SecurityPresence = model("SecurityPresence", securityPresenceSchema
 export const SecurityEvent = model("SecurityEvent", securityEventSchema);
 export const EmergencyAlert = model("EmergencyAlert", emergencyAlertSchema);
 export const EmergencyView = model("EmergencyView", emergencyViewSchema);
-
+export const BlacklistEntry = model("BlacklistEntry", blacklistEntrySchema);
 

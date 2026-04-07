@@ -23,6 +23,30 @@ export async function createGate(req: Request, res: Response) {
   return res.json({ ok: true, gate });
 }
 
+export async function manualDenial(req: Request, res: Response) {
+  const { gateId, reason, subjectCode } = req.body as {
+    gateId?: string;
+    reason?: string;
+    subjectCode?: string;
+  };
+  if (!gateId?.trim()) return res.status(400).json({ error: "gateId required" });
+  if (!reason?.trim()) return res.status(400).json({ error: "reason required" });
+  const gate = await SecurityGate.findOne({ idKey: gateId.trim() });
+  if (!gate) return res.status(404).json({ error: "Gate not found" });
+  const code = (subjectCode ?? "MANUAL").trim() || "MANUAL";
+  const ev = await SecurityEvent.create({
+    gateId: gate._id,
+    gateName: gate.name,
+    type: "access_denied",
+    time: new Date(),
+    subjectType: "unknown",
+    subjectCode: code,
+    action: "entry",
+    message: `Manual denial: ${reason.trim()}`,
+  });
+  return res.json({ ok: true, event: ev });
+}
+
 export async function scanSubject(req: Request, res: Response) {
   const { rawQrPayload, gateId, action } = req.body as {
     rawQrPayload: string;

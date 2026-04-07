@@ -1,39 +1,53 @@
 import type { Request, Response } from "express";
 import jwt from "jsonwebtoken";
 
-// NOTE: This is a blueprint. Wire real auth (passwords or SSO) as needed.
+import { Resident } from "../models";
+import type { AuthedRequest } from "../middleware/auth";
+
+const JWT_SECRET = () => process.env.JWT_SECRET || "change-me";
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+
 export async function login(req: Request, res: Response) {
-  // body: { role, residentId?, residentCode? }
-  const { role } = req.body as { role: "resident" | "guard" | "manager" };
+  const { role, residentCode, sub: bodySub } = req.body as {
+    role: "resident" | "guard" | "manager";
+    residentCode?: string;
+    sub?: string;
+  };
 
-  // In a real implementation you would validate credentials and/or residentCode.
-  // For now we issue a signed token.
-  const sub = req.body.sub || req.body.userId || "demo-user";
-
-  // ✅ Proper env handling
-  const JWT_SECRET = process.env.JWT_SECRET;
-  const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
-
-  if (!JWT_SECRET) {
-    throw new Error("JWT_SECRET is not defined");
+  if (!role || !["resident", "guard", "manager"].includes(role)) {
+    return res.status(400).json({ error: "Invalid role" });
   }
 
-  const token = jwt.sign({ sub, role }, JWT_SECRET, {
-    expiresIn: JWT_EXPIRES_IN as any,
-  });
+  let sub = bodySub?.trim();
+
+  if (role === "resident") {
+    if (residentCode?.trim()) {
+      const r = await Resident.findOne({ code: residentCode.trim() });
+      if (!r) return res.status(400).json({ error: "Unknown resident code" });
+      sub = String(r._id);
+    } else if (!sub) {
+      return res.status(400).json({ error: "residentCode required for resident login" });
+    }
+  } else if (!sub) {
+    sub = role === "guard" ? "guard-demo" : "manager-demo";
+  }
+
+  const token = jwt.sign({ sub, role }, JWT_SECRET(), {
+    expiresIn: JWT_EXPIRES_IN,
+  } as jwt.SignOptions);
 
   res
     .cookie("estateos_token", token, {
       httpOnly: true,
       sameSite: "lax",
-      secure: false,
+      secure: process.env.NODE_ENV === "production",
     })
-    .json({ ok: true });
+    .json({ ok: true, token, userId: sub, role });
 }
 
-export function me(req: Request, res: Response) {
-  // Return decoded user from middleware (left out in this blueprint).
-  res.json({ ok: true, user: (req as any).user ?? null });
+export function me(req: AuthedRequest, res: Response) {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  res.json({ ok: true, user: req.user });
 }
 
 export function logout(_req: Request, res: Response) {

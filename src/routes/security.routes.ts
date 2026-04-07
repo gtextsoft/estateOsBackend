@@ -5,6 +5,7 @@ import {
   createGate,
   listSecurityEvents,
   scanSubject,
+  manualDenial,
   listEmergencyAlerts,
   ackEmergencyAlert,
   listGatesPresenceDebug,
@@ -20,6 +21,7 @@ export function createSecurityRoutes() {
 
   router.get("/events", listSecurityEvents);
   router.post("/scans", scanSubject);
+  router.post("/manual-denials", manualDenial);
 
   router.get("/emergency-alerts", listEmergencyAlerts);
   router.post("/emergency-alerts/:id/ack", ackEmergencyAlert);

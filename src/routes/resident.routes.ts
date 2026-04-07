@@ -9,6 +9,7 @@ import {
   listMyPayments,
   createPaymentRequest,
   listMyNotifications,
+  getMyProfile,
 } from "../controllers/resident.controller";
 
 export function createResidentRoutes() {
@@ -17,6 +18,7 @@ export function createResidentRoutes() {
   router.use(requireAuth);
   router.use(requireRole("resident", "guard", "manager"));
 
+  router.get("/profile", requireRole("resident"), getMyProfile);
   router.get("/guest-passes", listMyGuestPasses);
   router.post("/guest-passes", createGuestPass);
   router.patch("/guest-passes/:passId/revoke", revokeGuestPass);
