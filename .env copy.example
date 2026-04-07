@@ -11,3 +11,12 @@ JWT_EXPIRES_IN=7d
 # CORS
 CLIENT_ORIGIN=http://localhost:3000
 
+# Seed (optional overrides for npm run seed)
+# SEED_PLATFORM_ADMIN_EMAIL=platform@estateos.local
+# SEED_PLATFORM_ADMIN_PASSWORD=PlatformAdmin123!
+# SEED_MANAGER_EMAIL=manager@estateos.local
+# SEED_MANAGER_PASSWORD=Manager123!
+# SEED_RESIDENT_PASSWORD=Resident123!
+# SEED_GUARD_EMAIL=guard@estateos.local
+# SEED_GUARD_PASSWORD=Guard123!
+

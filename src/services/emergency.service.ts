@@ -5,6 +5,7 @@ export async function createEmergencyForResident(input: { residentId: string; me
   if (!resident) throw new Error("Resident not found");
 
   const alert = await EmergencyAlert.create({
+    estateId: resident.estateId,
     residentId: resident._id,
     residentName: resident.name,
     unit: resident.unit,
@@ -12,8 +13,8 @@ export async function createEmergencyForResident(input: { residentId: string; me
     status: "active",
   });
 
-  // Optional: also push a resident notification
   await Notification.create({
+    estateId: resident.estateId,
     recipientRole: "resident",
     recipientId: resident._id,
     type: "emergency",
@@ -26,19 +27,30 @@ export async function createEmergencyForResident(input: { residentId: string; me
   return alert;
 }
 
-export async function ackEmergency(input: { emergencyId: string; acknowledgedByUserId?: string }) {
-  const updated = await EmergencyAlert.findByIdAndUpdate(
-    input.emergencyId,
-    { status: "acknowledged", acknowledgedBy: input.acknowledgedByUserId ?? undefined, acknowledgedAt: new Date() },
+export async function ackEmergency(input: {
+  emergencyId: string;
+  estateId: string;
+  acknowledgedByUserId?: string;
+}) {
+  const updated = await EmergencyAlert.findOneAndUpdate(
+    { _id: input.emergencyId, estateId: input.estateId },
+    {
+      status: "acknowledged",
+      acknowledgedBy: input.acknowledgedByUserId ?? undefined,
+      acknowledgedAt: new Date(),
+    },
     { new: true },
   );
   if (!updated) throw new Error("Emergency alert not found");
   return updated;
 }
 
-export async function listEmergencyAlerts(filter?: { status?: "active" | "acknowledged" }) {
-  const q: any = {};
+export async function listEmergencyAlerts(filter?: {
+  status?: "active" | "acknowledged";
+  estateId?: string;
+}) {
+  const q: Record<string, unknown> = {};
   if (filter?.status) q.status = filter.status;
+  if (filter?.estateId) q.estateId = filter.estateId;
   return EmergencyAlert.find(q).sort({ createdAt: -1 }).limit(200);
 }
-

@@ -1,6 +1,6 @@
 import type { Request, Response } from "express";
 import { createEmergencyForResident } from "../services/emergency.service";
-import type { Role } from "../middleware/auth";
+import type { Role } from "../models/index";
 
 export async function createEmergencyForMe(req: Request, res: Response) {
   const user = (req as any).user as { id: string; role: Role };

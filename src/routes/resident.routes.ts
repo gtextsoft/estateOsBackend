@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAuth, requireEstateActive, requireKycApproved, requireRole } from "../middleware/auth";
 import {
   listMyGuestPasses,
   createGuestPass,
@@ -16,9 +16,13 @@ export function createResidentRoutes() {
   const router = Router();
 
   router.use(requireAuth);
-  router.use(requireRole("resident", "guard", "manager"));
+  router.use(requireRole("resident"));
 
-  router.get("/profile", requireRole("resident"), getMyProfile);
+  router.get("/profile", getMyProfile);
+
+  router.use(requireEstateActive);
+  router.use(requireKycApproved);
+
   router.get("/guest-passes", listMyGuestPasses);
   router.post("/guest-passes", createGuestPass);
   router.patch("/guest-passes/:passId/revoke", revokeGuestPass);
@@ -33,4 +37,3 @@ export function createResidentRoutes() {
 
   return router;
 }
-

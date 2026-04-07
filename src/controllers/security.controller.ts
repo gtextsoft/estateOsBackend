@@ -1,4 +1,4 @@
-import type { Request, Response } from "express";
+import type { Response } from "express";
 import {
   EmergencyAlert,
   SecurityEvent,
@@ -7,15 +7,32 @@ import {
 } from "../models";
 import { scanBySubjectCode } from "../services/scan.service";
 import { listEmergencyAlerts as listEmergencyAlertsService, ackEmergency } from "../services/emergency.service";
+import type { AuthedRequest } from "../middleware/auth";
 
-export async function listGates(_req: Request, res: Response) {
-  const gates = await SecurityGate.find().sort({ createdAt: 1 });
+function estateIdOr403(req: AuthedRequest, res: Response): string | undefined {
+  const eid = req.user?.estateId;
+  if (!eid) {
+    res.status(403).json({ error: "Estate context required" });
+    return undefined;
+  }
+  return eid;
+}
+
+export async function listGates(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
+  const gates = await SecurityGate.find({ estateId }).sort({ createdAt: 1 });
   return res.json({ ok: true, gates });
 }
 
-export async function createGate(req: Request, res: Response) {
+export async function createGate(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
   const { name, idKey, status } = req.body as { name: string; idKey: string; status?: string };
   const gate = await SecurityGate.create({
+    estateId,
     name,
     idKey,
     status: status ?? "Active",
@@ -23,7 +40,10 @@ export async function createGate(req: Request, res: Response) {
   return res.json({ ok: true, gate });
 }
 
-export async function manualDenial(req: Request, res: Response) {
+export async function manualDenial(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
   const { gateId, reason, subjectCode } = req.body as {
     gateId?: string;
     reason?: string;
@@ -31,10 +51,11 @@ export async function manualDenial(req: Request, res: Response) {
   };
   if (!gateId?.trim()) return res.status(400).json({ error: "gateId required" });
   if (!reason?.trim()) return res.status(400).json({ error: "reason required" });
-  const gate = await SecurityGate.findOne({ idKey: gateId.trim() });
+  const gate = await SecurityGate.findOne({ estateId, idKey: gateId.trim() });
   if (!gate) return res.status(404).json({ error: "Gate not found" });
   const code = (subjectCode ?? "MANUAL").trim() || "MANUAL";
   const ev = await SecurityEvent.create({
+    estateId,
     gateId: gate._id,
     gateName: gate.name,
     type: "access_denied",
@@ -47,7 +68,10 @@ export async function manualDenial(req: Request, res: Response) {
   return res.json({ ok: true, event: ev });
 }
 
-export async function scanSubject(req: Request, res: Response) {
+export async function scanSubject(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
   const { rawQrPayload, gateId, action } = req.body as {
     rawQrPayload: string;
     gateId: string;
@@ -58,13 +82,16 @@ export async function scanSubject(req: Request, res: Response) {
     rawQrPayload,
     gateId,
     action,
+    estateId,
   });
 
-  // `result` already includes `ok`, so do not re-add it (TS2783).
   return res.json(result);
 }
 
-export async function listSecurityEvents(req: Request, res: Response) {
+export async function listSecurityEvents(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
   const {
     gateId,
     type,
@@ -77,7 +104,7 @@ export async function listSecurityEvents(req: Request, res: Response) {
     limit?: number;
   };
 
-  const filter: any = {};
+  const filter: Record<string, unknown> = { estateId };
   if (gateId) filter.gateId = gateId;
   if (type) filter.type = type;
   if (q?.trim()) {
@@ -93,23 +120,30 @@ export async function listSecurityEvents(req: Request, res: Response) {
   return res.json({ ok: true, events });
 }
 
-export async function listEmergencyAlerts(_req: Request, res: Response) {
-  const alerts = await listEmergencyAlertsService();
+export async function listEmergencyAlerts(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
+  const alerts = await listEmergencyAlertsService({ estateId });
   return res.json({ ok: true, alerts });
 }
 
-export async function ackEmergencyAlert(req: Request, res: Response) {
+export async function ackEmergencyAlert(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
   const { id } = req.params;
   const emergencyId = Array.isArray(id) ? id[0] : id;
   if (!emergencyId) return res.status(400).json({ error: "Missing emergency id" });
   const { acknowledgedByUserId } = req.body as { acknowledgedByUserId?: string };
-  const updated = await ackEmergency({ emergencyId, acknowledgedByUserId });
+  const updated = await ackEmergency({ emergencyId, estateId, acknowledgedByUserId });
   return res.json({ ok: true, alert: updated });
 }
 
-// Optional debug endpoint for presence data; matches your frontend debug views.
-export async function listGatesPresenceDebug(_req: Request, res: Response) {
-  const presence = await SecurityPresence.find().sort({ updatedAt: -1 }).limit(200);
+export async function listGatesPresenceDebug(req: AuthedRequest, res: Response) {
+  const estateId = estateIdOr403(req, res);
+  if (!estateId) return;
+
+  const presence = await SecurityPresence.find({ estateId }).sort({ updatedAt: -1 }).limit(200);
   return res.json({ ok: true, presence });
 }
-

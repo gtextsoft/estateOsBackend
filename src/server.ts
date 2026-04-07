@@ -20,21 +20,23 @@ async function main() {
   const port = Number(process.env.PORT || 4000);
   const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/estateos";
 
+  try {
+    await connectDB(mongoUri);
+    // eslint-disable-next-line no-console
+    console.log("MongoDB connected");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error("MongoDB connection failed:", msg);
+    // eslint-disable-next-line no-console
+    console.error("Start MongoDB locally or set MONGODB_URI to Atlas (see estateOsBackend README).");
+    process.exit(1);
+  }
+
   httpServer.listen(port, () => {
     // eslint-disable-next-line no-console
     console.log(`EstateOS backend listening on :${port}`);
   });
-
-  // Connect DB in background so the server still starts if Mongo isn't running yet.
-  connectDB(mongoUri)
-    .then(() => {
-      // eslint-disable-next-line no-console
-      console.log("MongoDB connected");
-    })
-    .catch((err) => {
-      // eslint-disable-next-line no-console
-      console.error("MongoDB connection failed:", err?.message ?? err);
-    });
 }
 
 main().catch((err) => {

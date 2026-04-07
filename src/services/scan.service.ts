@@ -17,6 +17,7 @@ export type SecurityScanAction = "entry" | "exit" | "auto";
 export type SecurityEventType = "entry" | "exit" | "patrol" | "access_denied" | "system";
 
 async function notifyGuestEntry(input: {
+  estateId: unknown;
   residentId: unknown;
   guestName: string;
   gateName: string;
@@ -25,6 +26,7 @@ async function notifyGuestEntry(input: {
 }) {
   const now = new Date();
   await Notification.create({
+    estateId: input.estateId as Types.ObjectId,
     recipientRole: "resident",
     recipientId: input.residentId as Types.ObjectId,
     type: "visitor",
@@ -39,31 +41,39 @@ export async function scanBySubjectCode(input: {
   rawQrPayload: string;
   gateId: SecurityGateId;
   action?: SecurityScanAction;
+  /** Tenant scope; required for multi-tenant gates */
+  estateId?: string;
 }) {
   const subjectCode = extractCodeFromQrPayload(input.rawQrPayload);
   if (!subjectCode) {
     throw new Error("Missing subject code");
   }
 
-  const gate = await SecurityGate.findOne({ idKey: input.gateId });
+  const gate = input.estateId
+    ? await SecurityGate.findOne({ estateId: input.estateId, idKey: input.gateId })
+    : await SecurityGate.findOne({ idKey: input.gateId });
   if (!gate) throw new Error("Gate not found");
 
-  const pass = await GuestPass.findOne({ code: subjectCode });
-  const resident = await Resident.findOne({ code: subjectCode });
+  const eid = gate.estateId;
 
-  const presence = await SecurityPresence.findOne({ subjectCode });
+  const pass = await GuestPass.findOne({ code: subjectCode, estateId: eid });
+  const resident = await Resident.findOne({ code: subjectCode, estateId: eid });
+
+  const presence = await SecurityPresence.findOne({ estateId: eid, subjectCode });
   const inside = presence?.inside ?? false;
 
   const action = resolveAction({ inputAction: input.action ?? "auto", inside });
 
   const idNorm = subjectCode.trim().toUpperCase();
   const bl = await BlacklistEntry.findOne({
+    estateId: eid,
     identifier: idNorm,
     active: true,
     $or: [{ expiresAt: { $exists: false } }, { expiresAt: null }, { expiresAt: { $gt: new Date() } }],
   });
   if (bl) {
     const ev = await SecurityEvent.create({
+      estateId: eid,
       gateId: gate._id,
       gateName: gate.name,
       type: "access_denied",
@@ -79,6 +89,7 @@ export async function scanBySubjectCode(input: {
   // Unknown subject => deny
   if (!pass && !resident) {
     const ev = await SecurityEvent.create({
+      estateId: eid,
       gateId: gate._id,
       gateName: gate.name,
       type: "access_denied",
@@ -98,6 +109,7 @@ export async function scanBySubjectCode(input: {
     // Deny entry for revoked/pending passes
     if (action === "entry" && (pass.status === "revoked" || pass.status === "pending")) {
       const ev = await SecurityEvent.create({
+        estateId: eid,
         gateId: gate._id,
         gateName: gate.name,
         type: "access_denied",
@@ -119,6 +131,7 @@ export async function scanBySubjectCode(input: {
     // Single-use: deny re-entry after consumed
     if (action === "entry" && pass.status === "used") {
       const ev = await SecurityEvent.create({
+        estateId: eid,
         gateId: gate._id,
         gateName: gate.name,
         type: "access_denied",
@@ -142,6 +155,7 @@ export async function scanBySubjectCode(input: {
       !isSameLocalCalendarDay(pass.date, now)
     ) {
       const ev = await SecurityEvent.create({
+        estateId: eid,
         gateId: gate._id,
         gateName: gate.name,
         type: "access_denied",
@@ -163,6 +177,7 @@ export async function scanBySubjectCode(input: {
         !isWithinServiceWindow(now, pass.date ?? undefined, pass.timeStart ?? undefined, pass.timeEnd ?? undefined)
       ) {
         const ev = await SecurityEvent.create({
+          estateId: eid,
           gateId: gate._id,
           gateName: gate.name,
           type: "access_denied",
@@ -182,6 +197,7 @@ export async function scanBySubjectCode(input: {
     // Already inside logic
     if (action === "entry" && inside) {
       const ev = await SecurityEvent.create({
+        estateId: eid,
         gateId: gate._id,
         gateName: gate.name,
         type: "system",
@@ -200,6 +216,7 @@ export async function scanBySubjectCode(input: {
 
   // Update presence for known subjects when action is entry/exit
   await upsertPresence({
+    estateId: eid,
     subjectCode,
     subjectType: pass ? "guest_pass" : resident ? "resident" : "unknown",
     inside,
@@ -209,6 +226,7 @@ export async function scanBySubjectCode(input: {
 
   // Create event
   const ev = await SecurityEvent.create({
+    estateId: eid,
     gateId: gate._id,
     gateName: gate.name,
     type: pass ? (action === "entry" ? "entry" : "exit") : "system",
@@ -231,6 +249,7 @@ export async function scanBySubjectCode(input: {
 
   if (pass && action === "entry" && ev.type === "entry") {
     await notifyGuestEntry({
+      estateId: eid,
       residentId: pass.residentId,
       guestName: pass.guestName,
       gateName: gate.name,
@@ -248,6 +267,7 @@ function resolveAction(input: { inputAction: SecurityScanAction; inside: boolean
 }
 
 async function upsertPresence(input: {
+  estateId: unknown;
   subjectCode: string;
   subjectType: "guest_pass" | "resident" | "unknown";
   inside: boolean;
@@ -257,9 +277,10 @@ async function upsertPresence(input: {
   const nextInside = input.action === "entry";
 
   const next = await SecurityPresence.findOneAndUpdate(
-    { subjectCode: input.subjectCode },
+    { estateId: input.estateId as import("mongoose").Types.ObjectId, subjectCode: input.subjectCode },
     {
       $set: {
+        estateId: input.estateId,
         subjectType: input.subjectType,
         inside: nextInside,
         lastGateId: input.gate._id,

@@ -5,11 +5,15 @@ import { createResidentRoutes } from "./resident.routes";
 import { createAdminRoutes } from "./admin.routes";
 import { createSecurityRoutes } from "./security.routes";
 import { createEmergencyRoutes } from "./emergency.routes";
+import { createPlatformRoutes } from "./platform.routes";
+import { createEstateRoutes } from "./estate.routes";
 
 export function createRouter() {
   const router = Router();
 
   router.use("/auth", createAuthRoutes());
+  router.use("/estates", createEstateRoutes());
+  router.use("/platform", createPlatformRoutes());
   router.use("/me", createResidentRoutes());
   router.use("/admin", createAdminRoutes());
   router.use("/security", createSecurityRoutes());
@@ -17,4 +21,3 @@ export function createRouter() {
 
   return router;
 }
-

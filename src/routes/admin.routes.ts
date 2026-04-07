@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth, requireRole } from "../middleware/auth";
+import { requireAuth, requireEstateActive, requireRole } from "../middleware/auth";
 import {
   listResidents,
   createResident,
@@ -21,12 +21,18 @@ import {
   listBlacklist,
   createBlacklistEntry,
   patchBlacklistEntry,
+  listPendingKyc,
+  reviewKyc,
 } from "../controllers/admin.controller";
 
 export function createAdminRoutes() {
   const router = Router();
   router.use(requireAuth);
   router.use(requireRole("manager"));
+  router.use(requireEstateActive);
+
+  router.get("/kyc/pending", listPendingKyc);
+  router.patch("/kyc/:userId", reviewKyc);
 
   router.get("/guest-passes", listAllGuestPasses);
   router.get("/guest-passes/expected", listExpectedGuestPasses);
@@ -56,4 +62,3 @@ export function createAdminRoutes() {
 
   return router;
 }
-

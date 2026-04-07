@@ -1,6 +1,8 @@
 import mongoose, { Schema, model } from "mongoose";
 
-export type Role = "resident" | "guard" | "manager";
+export type Role = "resident" | "guard" | "manager" | "platform_admin";
+export type KycStatus = "none" | "submitted" | "approved" | "rejected";
+export type EstateStatus = "pending" | "active" | "suspended";
 export type ResidentStatus = "Active" | "Pending" | "Inactive";
 export type GuestPassStatus = "active" | "used" | "pending" | "revoked";
 export type GuestPassType = "single" | "service" | "permanent";
@@ -16,21 +18,65 @@ export type IncidentType =
   | "other";
 export type PaymentStatus = "Paid" | "Pending" | "Overdue";
 
-// Users
-const userSchema = new Schema(
+const kycSubSchema = new Schema(
   {
-    role: { type: String, enum: ["resident", "guard", "manager"], required: true, index: true },
-    email: { type: String, required: false },
-    residentRef: { type: Schema.Types.ObjectId, ref: "Resident" },
-    passwordHash: { type: String },
+    fullName: { type: String },
+    phone: { type: String },
+    nationalIdOrPassport: { type: String },
+    notes: { type: String },
+    submittedAt: { type: Date },
+  },
+  { _id: false },
+);
+
+// Estate (tenant)
+const estateSchema = new Schema(
+  {
+    name: { type: String, required: true },
+    slug: { type: String, required: true, unique: true, lowercase: true, trim: true, index: true },
+    status: {
+      type: String,
+      enum: ["pending", "active", "suspended"],
+      default: "pending",
+      index: true,
+    },
+    reviewNote: { type: String },
+    createdByUserId: { type: Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true },
 );
 
-// Residents
+// Users
+const userSchema = new Schema(
+  {
+    role: {
+      type: String,
+      enum: ["resident", "guard", "manager", "platform_admin"],
+      required: true,
+      index: true,
+    },
+    email: { type: String, required: true, lowercase: true, trim: true, unique: true, index: true },
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", index: true },
+    residentRef: { type: Schema.Types.ObjectId, ref: "Resident" },
+    passwordHash: { type: String },
+    kycStatus: {
+      type: String,
+      enum: ["none", "submitted", "approved", "rejected"],
+      default: "none",
+      index: true,
+    },
+    kyc: kycSubSchema,
+    kycReviewNote: { type: String },
+    kycReviewedAt: { type: Date },
+  },
+  { timestamps: true },
+);
+
+// Residents (per estate)
 const residentSchema = new Schema(
   {
-    code: { type: String, required: true, unique: true, index: true },
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", required: true, index: true },
+    code: { type: String, required: true, index: true },
     name: { type: String, required: true },
     unit: { type: String, required: true },
     building: { type: String },
@@ -41,12 +87,14 @@ const residentSchema = new Schema(
   },
   { timestamps: true },
 );
+residentSchema.index({ estateId: 1, code: 1 }, { unique: true });
 
 // Guest passes
 const guestPassSchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", required: true, index: true },
     residentId: { type: Schema.Types.ObjectId, ref: "Resident", required: true, index: true },
-    code: { type: String, required: true, unique: true, index: true },
+    code: { type: String, required: true, index: true },
     guestName: { type: String, required: true },
     passType: { type: String, enum: ["single", "service", "permanent"], required: true },
     status: { type: String, enum: ["active", "used", "pending", "revoked"], required: true, index: true },
@@ -57,6 +105,7 @@ const guestPassSchema = new Schema(
   },
   { timestamps: true },
 );
+guestPassSchema.index({ estateId: 1, code: 1 }, { unique: true });
 
 const incidentUpdateSchema = new Schema(
   {
@@ -70,6 +119,7 @@ const incidentUpdateSchema = new Schema(
 // Incidents
 const incidentSchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", index: true },
     residentId: { type: Schema.Types.ObjectId, ref: "Resident" },
     title: { type: String, required: true },
     reporter: { type: String, required: true },
@@ -89,6 +139,7 @@ const incidentSchema = new Schema(
 // Blacklist (blocked pass/resident codes at the gate)
 const blacklistEntrySchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", required: true, index: true },
     identifier: { type: String, required: true, index: true },
     reason: { type: String, required: true },
     active: { type: Boolean, default: true, index: true },
@@ -96,10 +147,12 @@ const blacklistEntrySchema = new Schema(
   },
   { timestamps: true },
 );
+blacklistEntrySchema.index({ estateId: 1, identifier: 1 }, { unique: true });
 
 // Payments
 const paymentSchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", index: true },
     residentId: { type: Schema.Types.ObjectId, ref: "Resident", required: true, index: true },
     amount: { type: String, required: true },
     type: { type: String, required: true },
@@ -114,6 +167,7 @@ const paymentSchema = new Schema(
 // Notifications
 const notificationSchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", index: true },
     recipientRole: { type: String, enum: ["resident", "guard", "manager", "admin"], required: true, index: true },
     recipientId: { type: Schema.Types.ObjectId },
     type: { type: String, required: true },
@@ -128,18 +182,21 @@ const notificationSchema = new Schema(
 // Security gates
 const securityGateSchema = new Schema(
   {
-    idKey: { type: String, unique: true, required: true, index: true },
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", required: true, index: true },
+    idKey: { type: String, required: true, index: true },
     name: { type: String, required: true },
     status: { type: String, enum: ["Active", "Maintenance"], required: true },
     guards: { type: Number },
   },
   { timestamps: true },
 );
+securityGateSchema.index({ estateId: 1, idKey: 1 }, { unique: true });
 
-// Security presence (inside/outside)
+// Security presence (inside/outside) — scoped by estate for subject codes
 const securityPresenceSchema = new Schema(
   {
-    subjectCode: { type: String, required: true, unique: true, index: true },
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", required: true, index: true },
+    subjectCode: { type: String, required: true, index: true },
     subjectType: { type: String, enum: ["guest_pass", "resident", "unknown"], required: true },
     inside: { type: Boolean, required: true, default: false, index: true },
     lastEntryAt: { type: Date },
@@ -153,10 +210,12 @@ const securityPresenceSchema = new Schema(
   },
   { timestamps: true },
 );
+securityPresenceSchema.index({ estateId: 1, subjectCode: 1 }, { unique: true });
 
 // Security events (audit log)
 const securityEventSchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", index: true },
     gateId: { type: Schema.Types.ObjectId, ref: "SecurityGate", required: true, index: true },
     gateName: { type: String, required: true },
     type: { type: String, required: true },
@@ -175,6 +234,7 @@ const securityEventSchema = new Schema(
 // Emergency alerts
 const emergencyAlertSchema = new Schema(
   {
+    estateId: { type: Schema.Types.ObjectId, ref: "Estate", index: true },
     residentId: { type: Schema.Types.ObjectId, ref: "Resident", required: true, index: true },
     residentName: { type: String, required: true },
     unit: { type: String, required: true },
@@ -191,12 +251,13 @@ const emergencyViewSchema = new Schema(
   {
     emergencyId: { type: Schema.Types.ObjectId, ref: "EmergencyAlert", required: true, index: true },
     userId: { type: Schema.Types.ObjectId, required: true, index: true },
-    role: { type: String, enum: ["resident", "guard", "manager"], required: true },
+    role: { type: String, enum: ["resident", "guard", "manager", "platform_admin"], required: true },
     seenAt: { type: Date, default: Date.now },
   },
   { timestamps: false },
 );
 
+export const Estate = model("Estate", estateSchema);
 export const User = model("User", userSchema);
 export const Resident = model("Resident", residentSchema);
 export const GuestPass = model("GuestPass", guestPassSchema);
@@ -210,4 +271,3 @@ export const SecurityEvent = model("SecurityEvent", securityEventSchema);
 export const EmergencyAlert = model("EmergencyAlert", emergencyAlertSchema);
 export const EmergencyView = model("EmergencyView", emergencyViewSchema);
 export const BlacklistEntry = model("BlacklistEntry", blacklistEntrySchema);
-

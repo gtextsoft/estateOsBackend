@@ -2,6 +2,8 @@ import dotenv from "dotenv";
 import mongoose from "mongoose";
 
 import {
+  Estate,
+  User,
   Resident,
   SecurityGate,
   GuestPass,
@@ -9,6 +11,7 @@ import {
   Payment,
   BlacklistEntry,
 } from "./models/index";
+import { hashPassword } from "./lib/password";
 
 dotenv.config();
 
@@ -17,11 +20,50 @@ const mongoUri = process.env.MONGODB_URI || "mongodb://localhost:27017/estateos"
 async function main() {
   await mongoose.connect(mongoUri);
 
-  await SecurityGate.deleteMany({ idKey: { $in: ["north", "south", "service"] } });
+  const demoSlug = "demo-estate";
+
+  let estate = await Estate.findOne({ slug: demoSlug });
+  if (!estate) {
+    estate = await Estate.create({
+      name: "Demo Estate",
+      slug: demoSlug,
+      status: "active",
+    });
+  } else {
+    await Estate.findByIdAndUpdate(estate._id, { $set: { status: "active" } });
+  }
+
+  const estateId = estate._id;
+
+  const platformEmail = (process.env.SEED_PLATFORM_ADMIN_EMAIL || "platform@estateos.local").toLowerCase();
+  const platformPass = process.env.SEED_PLATFORM_ADMIN_PASSWORD || "PlatformAdmin123!";
+  if (!(await User.findOne({ email: platformEmail }))) {
+    await User.create({
+      role: "platform_admin",
+      email: platformEmail,
+      passwordHash: await hashPassword(platformPass),
+      kycStatus: "approved",
+    });
+  }
+
+  const managerEmail = (process.env.SEED_MANAGER_EMAIL || "manager@estateos.local").toLowerCase();
+  const managerPass = process.env.SEED_MANAGER_PASSWORD || "Manager123!";
+  let manager = await User.findOne({ email: managerEmail });
+  if (!manager) {
+    manager = await User.create({
+      role: "manager",
+      email: managerEmail,
+      passwordHash: await hashPassword(managerPass),
+      estateId,
+      kycStatus: "approved",
+    });
+  }
+
+  await SecurityGate.deleteMany({ estateId, idKey: { $in: ["north", "south", "service"] } });
   await SecurityGate.insertMany([
-    { idKey: "north", name: "North Gate", status: "Active", guards: 2 },
-    { idKey: "south", name: "South Gate", status: "Active", guards: 1 },
-    { idKey: "service", name: "Service Gate", status: "Maintenance", guards: 1 },
+    { estateId, idKey: "north", name: "North Gate", status: "Active", guards: 2 },
+    { estateId, idKey: "south", name: "South Gate", status: "Active", guards: 1 },
+    { estateId, idKey: "service", name: "Service Gate", status: "Maintenance", guards: 1 },
   ]);
 
   const seedResidents = [
@@ -43,22 +85,55 @@ async function main() {
   ];
 
   for (const s of seedResidents) {
-    await Resident.findOneAndUpdate({ code: s.code }, { $set: { ...s } }, { upsert: true, new: true });
+    await Resident.findOneAndUpdate(
+      { estateId, code: s.code },
+      { $set: { ...s, estateId } },
+      { upsert: true, new: true },
+    );
   }
 
-  await BlacklistEntry.deleteMany({ identifier: "GPA-BLOCK-DEMO" });
+  const residentPass = process.env.SEED_RESIDENT_PASSWORD || "Resident123!";
+  const adaeze = await Resident.findOne({ estateId, code: "RES-A01" });
+  if (adaeze) {
+    const residentEmail = "adaeze@estateos.io";
+    if (!(await User.findOne({ email: residentEmail }))) {
+      await User.create({
+        role: "resident",
+        email: residentEmail,
+        passwordHash: await hashPassword(residentPass),
+        estateId,
+        residentRef: adaeze._id,
+        kycStatus: "approved",
+      });
+    }
+  }
+
+  const guardEmail = (process.env.SEED_GUARD_EMAIL || "guard@estateos.local").toLowerCase();
+  const guardPass = process.env.SEED_GUARD_PASSWORD || "Guard123!";
+  if (!(await User.findOne({ email: guardEmail }))) {
+    await User.create({
+      role: "guard",
+      email: guardEmail,
+      passwordHash: await hashPassword(guardPass),
+      estateId,
+      kycStatus: "approved",
+    });
+  }
+
+  await BlacklistEntry.deleteMany({ estateId, identifier: "GPA-BLOCK-DEMO" });
   await BlacklistEntry.create({
+    estateId,
     identifier: "GPA-BLOCK-DEMO",
     reason: "Seed demo blocked code (safe to delete)",
     active: true,
   });
 
-  const adaeze = await Resident.findOne({ code: "RES-A01" });
   if (adaeze) {
     await GuestPass.deleteMany({ residentId: adaeze._id });
     const n = Math.floor(Date.now() / 1000) % 1000000;
     const today = new Date().toISOString().slice(0, 10);
     await GuestPass.create({
+      estateId,
       residentId: adaeze._id,
       code: `GPA-${String(n).padStart(6, "0")}`,
       guestName: "Demo Guest",
@@ -68,6 +143,7 @@ async function main() {
       date: today,
     });
     await GuestPass.create({
+      estateId,
       residentId: adaeze._id,
       code: `GPA-SVC-${String(n + 1).padStart(4, "0")}`,
       guestName: "Service Vendor",
@@ -80,10 +156,12 @@ async function main() {
     });
 
     await Incident.deleteMany({
+      estateId,
       residentId: adaeze._id,
       title: "Access delay reported - Unit A-01",
     });
     await Incident.create({
+      estateId,
       residentId: adaeze._id,
       title: "Access delay reported - Unit A-01",
       reporter: "Adaeze Okafor",
@@ -94,10 +172,11 @@ async function main() {
     });
   }
 
-  const sarah = await Resident.findOne({ code: "RES-4B" });
+  const sarah = await Resident.findOne({ estateId, code: "RES-4B" });
   if (sarah) {
     await Payment.deleteMany({ residentId: sarah._id, reference: "TRX-842193" });
     await Payment.create({
+      estateId,
       residentId: sarah._id,
       amount: "₦250,000",
       type: "Service Charge",
@@ -108,7 +187,19 @@ async function main() {
   }
 
   // eslint-disable-next-line no-console
-  console.log("Seed complete. Resident login: use residentCode RES-A01 (maps to Adaeze Okafor).");
+  console.log("Seed complete.");
+  // eslint-disable-next-line no-console
+  console.log(`  Demo estate slug: ${demoSlug} (active)`);
+  // eslint-disable-next-line no-console
+  console.log(`  Platform admin: ${platformEmail} / ${platformPass}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Manager: ${managerEmail} / ${managerPass}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Resident (email login): adaeze@estateos.io / ${residentPass}`);
+  // eslint-disable-next-line no-console
+  console.log(`  Guard (email login): ${guardEmail} / ${guardPass}`);
+  // eslint-disable-next-line no-console
+  console.log("  Legacy resident code login still works: RES-A01");
   await mongoose.disconnect();
 }
 

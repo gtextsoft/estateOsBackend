@@ -7,20 +7,89 @@ import {
   Notification,
   Payment,
   Resident,
+  User,
 } from "../models";
-import type { Role } from "../middleware/auth";
+import type { AuthedRequest } from "../middleware/auth";
+import type { Role } from "../models/index";
 
-function requireResidentIdFromQuery(req: Request) {
-  return (req.query as any).residentId || (req.body as any).residentId;
+function getEstateId(req: AuthedRequest, res: Response): string | undefined {
+  const eid = req.user?.estateId;
+  if (!eid) {
+    res.status(403).json({ error: "Estate context required" });
+    return undefined;
+  }
+  return eid;
 }
 
-export async function listResidents(req: Request, res: Response) {
+export async function listPendingKyc(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
+  const users = await User.find({
+    estateId,
+    role: { $in: ["resident", "guard"] },
+    kycStatus: "submitted",
+  })
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .lean();
+
+  return res.json({ ok: true, users });
+}
+
+export async function reviewKyc(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
+  const { userId } = req.params;
+  const { action, note } = req.body as { action?: "approve" | "reject"; note?: string };
+
+  if (!action || !["approve", "reject"].includes(action)) {
+    return res.status(400).json({ error: "action must be approve or reject" });
+  }
+
+  const user = await User.findOne({ _id: userId, estateId });
+  if (!user || !["resident", "guard"].includes(user.role)) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  if (user.kycStatus !== "submitted") {
+    return res.status(400).json({ error: "User is not awaiting KYC review" });
+  }
+
+  if (action === "approve") {
+    user.kycStatus = "approved";
+    user.kycReviewNote = note?.trim();
+    user.kycReviewedAt = new Date();
+    await user.save();
+    if (user.role === "resident" && user.residentRef) {
+      await Resident.findByIdAndUpdate(user.residentRef, { status: "Active" });
+    }
+    return res.json({ ok: true, userId: String(user._id), kycStatus: user.kycStatus });
+  }
+
+  user.kycStatus = "rejected";
+  user.kycReviewNote = note?.trim();
+  user.kycReviewedAt = new Date();
+  await user.save();
+  if (user.role === "resident" && user.residentRef) {
+    await Resident.findByIdAndUpdate(user.residentRef, { status: "Inactive" });
+  }
+  return res.json({ ok: true, userId: String(user._id), kycStatus: user.kycStatus });
+}
+
+export async function listResidents(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { limit = 200 } = req.query as any;
-  const residents = await Resident.find().sort({ createdAt: -1 }).limit(Number(limit));
+  const residents = await Resident.find({ estateId }).sort({ createdAt: -1 }).limit(Number(limit));
   return res.json({ ok: true, residents });
 }
 
-export async function createResident(req: Request, res: Response) {
+export async function createResident(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { name, unit, email, phone, code, building, block } = req.body as {
     name?: string;
     unit?: string;
@@ -40,10 +109,11 @@ export async function createResident(req: Request, res: Response) {
     residentCode = `RES-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
   }
 
-  const dup = await Resident.findOne({ code: residentCode });
-  if (dup) return res.status(409).json({ error: "Resident code already exists" });
+  const dup = await Resident.findOne({ estateId, code: residentCode });
+  if (dup) return res.status(409).json({ error: "Resident code already exists in this estate" });
 
   const r = await Resident.create({
+    estateId,
     code: residentCode,
     name: name.trim(),
     unit: unit.trim(),
@@ -57,7 +127,10 @@ export async function createResident(req: Request, res: Response) {
   return res.json({ ok: true, resident: r });
 }
 
-export async function patchResident(req: Request, res: Response) {
+export async function patchResident(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { residentId } = req.params;
   const { building, block, unit, name, phone } = req.body as {
     building?: string;
@@ -66,6 +139,9 @@ export async function patchResident(req: Request, res: Response) {
     name?: string;
     phone?: string;
   };
+
+  const existing = await Resident.findOne({ _id: residentId, estateId });
+  if (!existing) return res.status(404).json({ error: "Resident not found" });
 
   const patch: Record<string, unknown> = {};
   if (building !== undefined) patch.building = building.trim() || undefined;
@@ -79,38 +155,57 @@ export async function patchResident(req: Request, res: Response) {
   return res.json({ ok: true, resident: updated });
 }
 
-export async function listResidentGuestPasses(req: Request, res: Response) {
+export async function listResidentGuestPasses(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { residentId } = req.params;
-  const passes = await GuestPass.find({ residentId }).sort({ createdAt: -1 }).limit(200);
+  const r = await Resident.findOne({ _id: residentId, estateId });
+  if (!r) return res.status(404).json({ error: "Resident not found" });
+
+  const passes = await GuestPass.find({ residentId, estateId }).sort({ createdAt: -1 }).limit(200);
   return res.json({ ok: true, passes });
 }
 
-export async function updateGuestPassStatus(req: Request, res: Response) {
+export async function updateGuestPassStatus(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { passId } = req.params;
   const { status } = req.body as { status: "active" | "used" | "pending" | "revoked" };
 
-  const user = (req as any).user as { id: string; role: Role };
-  // Manager can override guest-pass status
+  const pass = await GuestPass.findOne({ _id: passId, estateId });
+  if (!pass) return res.status(404).json({ error: "Pass not found" });
+
   await GuestPass.findByIdAndUpdate(passId, { status });
 
   return res.json({ ok: true });
 }
 
-export async function listIncidents(req: Request, res: Response) {
+export async function listIncidents(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { limit = 200 } = req.query as any;
-  const incidents = await Incident.find().sort({ createdAt: -1 }).limit(Number(limit));
+  const incidents = await Incident.find({ estateId }).sort({ createdAt: -1 }).limit(Number(limit));
   return res.json({ ok: true, incidents });
 }
 
-export async function getIncidentDetail(req: Request, res: Response) {
+export async function getIncidentDetail(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { incidentId } = req.params;
-  const incident = await Incident.findById(incidentId);
+  const incident = await Incident.findOne({ _id: incidentId, estateId });
   if (!incident) return res.status(404).json({ error: "Incident not found" });
   const updates = await IncidentUpdate.find({ incidentId: incident._id }).sort({ createdAt: 1 }).limit(500);
   return res.json({ ok: true, incident, updates });
 }
 
-export async function updateIncident(req: Request, res: Response) {
+export async function updateIncident(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { incidentId } = req.params;
   const { status, message, incidentType, attachments } = req.body as {
     status?: any;
@@ -125,10 +220,9 @@ export async function updateIncident(req: Request, res: Response) {
   if (incidentType !== undefined) patch.incidentType = incidentType || undefined;
   if (attachments !== undefined) patch.attachments = Array.isArray(attachments) ? attachments : [];
 
-  const updated = await Incident.findByIdAndUpdate(incidentId, { $set: patch }, { new: true });
+  const updated = await Incident.findOneAndUpdate({ _id: incidentId, estateId }, { $set: patch }, { new: true });
   if (!updated) return res.status(404).json({ error: "Incident not found" });
 
-  // Add incident update to timeline (used by frontend modal updates).
   if (message?.trim()) {
     await IncidentUpdate.create({
       incidentId: updated._id,
@@ -140,13 +234,19 @@ export async function updateIncident(req: Request, res: Response) {
   return res.json({ ok: true, incident: updated });
 }
 
-export async function listPayments(req: Request, res: Response) {
+export async function listPayments(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { limit = 200 } = req.query as any;
-  const payments = await Payment.find().sort({ createdAt: -1 }).limit(Number(limit));
+  const payments = await Payment.find({ estateId }).sort({ createdAt: -1 }).limit(Number(limit));
   return res.json({ ok: true, payments });
 }
 
-export async function createIncidentAdmin(req: Request, res: Response) {
+export async function createIncidentAdmin(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { title, reporter, severity, status, description, residentId, incidentType, attachments } = req.body as {
     title?: string;
     reporter?: string;
@@ -160,7 +260,13 @@ export async function createIncidentAdmin(req: Request, res: Response) {
 
   if (!title?.trim()) return res.status(400).json({ error: "title is required" });
 
+  if (residentId) {
+    const r = await Resident.findOne({ _id: residentId, estateId });
+    if (!r) return res.status(400).json({ error: "Unknown resident for this estate" });
+  }
+
   const incident = await Incident.create({
+    estateId,
     residentId: residentId || undefined,
     title: title.trim(),
     reporter: (reporter?.trim() || "Admin").slice(0, 200),
@@ -175,16 +281,22 @@ export async function createIncidentAdmin(req: Request, res: Response) {
   return res.json({ ok: true, incident });
 }
 
-export async function listAllGuestPasses(_req: Request, res: Response) {
-  const passes = await GuestPass.find().sort({ createdAt: -1 }).limit(500);
+export async function listAllGuestPasses(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
+  const passes = await GuestPass.find({ estateId }).sort({ createdAt: -1 }).limit(500);
   return res.json({ ok: true, passes });
 }
 
-/** Active passes expected on a given calendar day: dated single/service for that day, or permanent. */
-export async function listExpectedGuestPasses(req: Request, res: Response) {
+export async function listExpectedGuestPasses(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { date } = req.query as { date?: string };
   const d = date?.trim() || new Date().toISOString().slice(0, 10);
   const passes = await GuestPass.find({
+    estateId,
     status: "active",
     $or: [{ passType: "permanent" }, { $and: [{ passType: { $in: ["single", "service"] } }, { date: d }] }],
   })
@@ -194,12 +306,18 @@ export async function listExpectedGuestPasses(req: Request, res: Response) {
   return res.json({ ok: true, date: d, passes });
 }
 
-export async function listBlacklist(_req: Request, res: Response) {
-  const blacklist = await BlacklistEntry.find().sort({ createdAt: -1 }).limit(500);
+export async function listBlacklist(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
+  const blacklist = await BlacklistEntry.find({ estateId }).sort({ createdAt: -1 }).limit(500);
   return res.json({ ok: true, blacklist });
 }
 
-export async function createBlacklistEntry(req: Request, res: Response) {
+export async function createBlacklistEntry(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { identifier, reason, expiresAt } = req.body as {
     identifier?: string;
     reason?: string;
@@ -210,6 +328,7 @@ export async function createBlacklistEntry(req: Request, res: Response) {
   }
   const idNorm = identifier.trim().toUpperCase();
   const entry = await BlacklistEntry.create({
+    estateId,
     identifier: idNorm,
     reason: reason.trim(),
     active: true,
@@ -218,7 +337,10 @@ export async function createBlacklistEntry(req: Request, res: Response) {
   return res.json({ ok: true, entry });
 }
 
-export async function patchBlacklistEntry(req: Request, res: Response) {
+export async function patchBlacklistEntry(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { id } = req.params;
   const { active, reason, expiresAt } = req.body as {
     active?: boolean;
@@ -229,7 +351,7 @@ export async function patchBlacklistEntry(req: Request, res: Response) {
   if (active !== undefined) patch.active = active;
   if (reason !== undefined) patch.reason = reason.trim();
   if (expiresAt !== undefined) patch.expiresAt = expiresAt ? new Date(expiresAt as string) : null;
-  const updated = await BlacklistEntry.findByIdAndUpdate(id, { $set: patch }, { new: true });
+  const updated = await BlacklistEntry.findOneAndUpdate({ _id: id, estateId }, { $set: patch }, { new: true });
   if (!updated) return res.status(404).json({ error: "Not found" });
   return res.json({ ok: true, entry: updated });
 }
@@ -239,7 +361,10 @@ function generatePassCode() {
   return `GPA-${String(n).padStart(6, "0")}`;
 }
 
-export async function createGuestPassForResident(req: Request, res: Response) {
+export async function createGuestPassForResident(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { residentId } = req.params;
   const { guestName, passType, date, timeStart, timeEnd } = req.body as {
     guestName: string;
@@ -249,7 +374,7 @@ export async function createGuestPassForResident(req: Request, res: Response) {
     timeEnd?: string;
   };
 
-  const resident = await Resident.findById(residentId);
+  const resident = await Resident.findOne({ _id: residentId, estateId });
   if (!resident) return res.status(404).json({ error: "Resident not found" });
   if (resident.status === "Inactive") return res.status(403).json({ error: "Resident is inactive" });
 
@@ -262,6 +387,7 @@ export async function createGuestPassForResident(req: Request, res: Response) {
         : `${date}, 11:59 PM`;
 
   const pass = await GuestPass.create({
+    estateId,
     residentId: resident._id,
     code,
     guestName,
@@ -276,7 +402,10 @@ export async function createGuestPassForResident(req: Request, res: Response) {
   return res.json({ ok: true, pass });
 }
 
-export async function createPaymentForResident(req: Request, res: Response) {
+export async function createPaymentForResident(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { residentId, amount, type, notes, status, dateLabel, reference } = req.body as {
     residentId: string;
     amount: string;
@@ -287,7 +416,11 @@ export async function createPaymentForResident(req: Request, res: Response) {
     reference?: string;
   };
 
+  const resident = await Resident.findOne({ _id: residentId, estateId });
+  if (!resident) return res.status(404).json({ error: "Resident not found" });
+
   const payment = await Payment.create({
+    estateId,
     residentId,
     amount,
     type,
@@ -297,8 +430,8 @@ export async function createPaymentForResident(req: Request, res: Response) {
     notes: notes?.trim() || undefined,
   });
 
-  // Notify resident (optional)
   await Notification.create({
+    estateId,
     recipientRole: "resident",
     recipientId: residentId,
     type: "payment",
@@ -311,7 +444,10 @@ export async function createPaymentForResident(req: Request, res: Response) {
   return res.json({ ok: true, payment });
 }
 
-export async function updatePayment(req: Request, res: Response) {
+export async function updatePayment(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
   const { paymentId } = req.params;
   const { type, status, notes } = req.body as {
     type?: string;
@@ -324,12 +460,13 @@ export async function updatePayment(req: Request, res: Response) {
   if (status !== undefined) patch.status = status;
   if (notes !== undefined) patch.notes = notes.trim() || undefined;
 
-  const updated = await Payment.findByIdAndUpdate(paymentId, { $set: patch }, { new: true });
+  const updated = await Payment.findOneAndUpdate({ _id: paymentId, estateId }, { $set: patch }, { new: true });
   if (!updated) return res.status(404).json({ error: "Payment not found" });
 
   const resident = await Resident.findById(updated.residentId);
   if (resident) {
     await Notification.create({
+      estateId,
       recipientRole: "resident",
       recipientId: resident._id,
       type: "payment",
@@ -343,21 +480,23 @@ export async function updatePayment(req: Request, res: Response) {
   return res.json({ ok: true, payment: updated });
 }
 
-export async function markNotificationsReadForAdmin(req: Request, res: Response) {
-  // Blueprint: mark all manager/admin notifications as read
-  const user = (req as any).user as { id: string; role: Role };
+export async function markNotificationsReadForAdmin(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
 
   await Notification.updateMany(
-    { recipientRole: "manager", read: false },
+    { recipientRole: "manager", estateId, read: false },
     { $set: { read: true } },
   );
   return res.json({ ok: true });
 }
 
-export async function listAdminNotifications(req: Request, res: Response) {
-  const notifs = await Notification.find({ recipientRole: "manager" })
+export async function listAdminNotifications(req: AuthedRequest, res: Response) {
+  const estateId = getEstateId(req, res);
+  if (!estateId) return;
+
+  const notifs = await Notification.find({ recipientRole: "manager", estateId })
     .sort({ createdAt: -1 })
     .limit(200);
   return res.json({ ok: true, notifications: notifs });
 }
-
