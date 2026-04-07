@@ -1,0 +1,13 @@
+PORT=4000
+NODE_ENV=development
+
+# MongoDB
+MONGODB_URI=mongodb://localhost:27017/estateos
+
+# Auth
+JWT_SECRET=change-me
+JWT_EXPIRES_IN=7d
+
+# CORS
+CLIENT_ORIGIN=http://localhost:3000
+
