@@ -11,8 +11,11 @@ function generatePassCode() {
 }
 
 async function resolveMyResident(user: { id: string; estateId?: string }) {
-  if (!user.estateId) return null;
-  return Resident.findOne({ _id: user.id, estateId: user.estateId });
+  if (user.estateId) {
+    return Resident.findOne({ _id: user.id, estateId: user.estateId });
+  }
+  // Legacy demo JWTs (allowLegacyAuth) omit estateId; scope by resident id only.
+  return Resident.findById(user.id);
 }
 
 export async function listMyGuestPasses(req: Request, res: Response) {

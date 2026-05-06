@@ -46,7 +46,8 @@ function hashVerificationCode(input: string): string {
 }
 
 function createVerificationCode(): string {
-  return crypto.randomInt(100000, 999999).toString();
+  // randomInt upper bound is exclusive; 1000000 yields six-digit codes through 999999 inclusive.
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
 function signVerificationToken(input: VerificationTokenPayload): string {
