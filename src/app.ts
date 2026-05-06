@@ -12,6 +12,9 @@ export function createApp() {
   const app = express();
 
   app.use(helmet());
+  // Cookie-first SPA CORS contract:
+  // CLIENT_ORIGIN must be the exact frontend origin (scheme + host + port) for credentialed cookies.
+  // Example: http://localhost:3000
   app.use(cors({ origin: process.env.CLIENT_ORIGIN, credentials: true }));
   app.use(cookieParser());
   app.use(json());

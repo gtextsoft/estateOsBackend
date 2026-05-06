@@ -1,3 +1,5 @@
+"use strict";
+
 import type { Request, Response } from "express";
 import { GuestPass, Incident, Notification, Payment, Resident } from "../models";
 import type { AuthedRequest } from "../middleware/auth";
@@ -6,6 +8,11 @@ import type { Role } from "../models/index";
 function generatePassCode() {
   const n = Math.floor(Date.now() / 1000) % 1000000;
   return `GPA-${String(n).padStart(6, "0")}`;
+}
+
+async function resolveMyResident(user: { id: string; estateId?: string }) {
+  if (!user.estateId) return null;
+  return Resident.findOne({ _id: user.id, estateId: user.estateId });
 }
 
 export async function listMyGuestPasses(req: Request, res: Response) {
@@ -19,11 +26,8 @@ export async function listMyGuestPasses(req: Request, res: Response) {
 export async function createGuestPass(req: Request, res: Response) {
   const user = (req as AuthedRequest).user as { id: string; role: Role; estateId?: string };
   const residentId = user.id;
-  const resident = await Resident.findById(residentId);
+  const resident = await resolveMyResident(user);
   if (!resident) return res.status(404).json({ error: "Resident not found" });
-  if (user.estateId && String(resident.estateId) !== user.estateId) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
 
   if (resident.status === "Inactive") return res.status(403).json({ error: "Resident is inactive" });
 
@@ -83,12 +87,12 @@ export async function listMyIncidents(req: Request, res: Response) {
 export async function createIncident(req: Request, res: Response) {
   const user = (req as AuthedRequest).user as { id: string; estateId?: string };
   const residentId = user.id;
-  const resident = await Resident.findById(residentId);
+  const resident = await resolveMyResident(user);
   if (!resident) return res.status(404).json({ error: "Resident not found" });
 
   const { title, severity, description, incidentType, attachments } = req.body as {
     title: string;
-    severity: any;
+    severity: string;
     description?: string;
     incidentType?: string;
     attachments?: string[];
@@ -121,7 +125,7 @@ export async function listMyPayments(req: Request, res: Response) {
 export async function createPaymentRequest(req: Request, res: Response) {
   const user = (req as AuthedRequest).user as { id: string; estateId?: string };
   const residentId = user.id;
-  const resident = await Resident.findById(residentId);
+  const resident = await resolveMyResident(user);
   if (!resident) return res.status(404).json({ error: "Resident not found" });
 
   const { type, amount, notes } = req.body as { type: string; amount: string; notes?: string };
@@ -174,8 +178,8 @@ export async function listMyNotifications(req: Request, res: Response) {
 }
 
 export async function getMyProfile(req: Request, res: Response) {
-  const user = (req as AuthedRequest).user as { id: string };
-  const r = await Resident.findById(user.id);
+  const user = (req as AuthedRequest).user as { id: string; estateId?: string };
+  const r = await resolveMyResident(user);
   if (!r) return res.status(404).json({ error: "Resident not found" });
   return res.json({ ok: true, resident: r });
 }

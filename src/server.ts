@@ -8,7 +8,16 @@ import { registerSockets } from "./sockets/index";
 
 dotenv.config();
 
+function assertRequiredSecrets() {
+  if (process.env.NODE_ENV !== "production") return;
+  const secret = process.env.JWT_SECRET?.trim();
+  if (!secret || secret === "change-me") {
+    throw new Error("JWT_SECRET must be set to a strong value in production.");
+  }
+}
+
 async function main() {
+  assertRequiredSecrets();
   const app = createApp();
   const httpServer = createServer(app);
   const io = new SocketIOServer(httpServer, {

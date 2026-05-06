@@ -1,7 +1,22 @@
 import type { Response } from "express";
 import type { Types } from "mongoose";
 
-import { Estate, Resident, User } from "../models";
+import {
+  BlacklistEntry,
+  EmergencyAlert,
+  EmergencyView,
+  Estate,
+  GuestPass,
+  Incident,
+  IncidentUpdate,
+  Notification,
+  Payment,
+  Resident,
+  SecurityEvent,
+  SecurityGate,
+  SecurityPresence,
+  User,
+} from "../models";
 import type { AuthedRequest } from "../middleware/auth";
 
 /** Lean estate row from MongoDB (IDs are ObjectIds; optional fields may be null). */
@@ -144,4 +159,46 @@ export async function manageEstate(req: AuthedRequest, res: Response) {
   }
 
   return res.status(400).json({ error: "Unsupported estate state" });
+}
+
+export async function deleteEstate(req: AuthedRequest, res: Response) {
+  const { estateId } = req.params;
+  const estate = await Estate.findById(estateId).lean();
+  if (!estate) return res.status(404).json({ error: "Estate not found" });
+
+  // Collect IDs first for dependent cleanup.
+  const [residents, incidents, emergencies] = await Promise.all([
+    Resident.find({ estateId }).select("_id").lean(),
+    Incident.find({ estateId }).select("_id").lean(),
+    EmergencyAlert.find({ estateId }).select("_id").lean(),
+  ]);
+  const residentIds = residents.map((r) => r._id);
+  const incidentIds = incidents.map((i) => i._id);
+  const emergencyIds = emergencies.map((e) => e._id);
+
+  await Promise.all([
+    User.deleteMany({ estateId }),
+    Resident.deleteMany({ estateId }),
+    GuestPass.deleteMany({ estateId }),
+    Incident.deleteMany({ estateId }),
+    Notification.deleteMany({ estateId }),
+    Payment.deleteMany({ estateId }),
+    SecurityGate.deleteMany({ estateId }),
+    SecurityPresence.deleteMany({ estateId }),
+    SecurityEvent.deleteMany({ estateId }),
+    EmergencyAlert.deleteMany({ estateId }),
+    BlacklistEntry.deleteMany({ estateId }),
+    Estate.deleteOne({ _id: estateId }),
+    residentIds.length ? User.deleteMany({ residentRef: { $in: residentIds } }) : Promise.resolve(),
+    incidentIds.length ? IncidentUpdate.deleteMany({ incidentId: { $in: incidentIds } }) : Promise.resolve(),
+    emergencyIds.length ? EmergencyView.deleteMany({ emergencyId: { $in: emergencyIds } }) : Promise.resolve(),
+  ]);
+
+  return res.json({
+    ok: true,
+    deleted: {
+      estateId: String(estate._id),
+      slug: estate.slug,
+    },
+  });
 }

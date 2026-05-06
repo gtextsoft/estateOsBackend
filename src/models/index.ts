@@ -17,6 +17,7 @@ export type IncidentType =
   | "medical"
   | "other";
 export type PaymentStatus = "Paid" | "Pending" | "Overdue";
+export type VerificationIntent = "register-estate" | "signup";
 
 const kycSubSchema = new Schema(
   {
@@ -257,6 +258,18 @@ const emergencyViewSchema = new Schema(
   { timestamps: false },
 );
 
+const verificationChallengeSchema = new Schema(
+  {
+    email: { type: String, required: true, lowercase: true, trim: true, index: true },
+    intent: { type: String, enum: ["register-estate", "signup"], required: true, index: true },
+    codeHash: { type: String, required: true },
+    attempts: { type: Number, default: 0 },
+    expiresAt: { type: Date, required: true, index: true },
+  },
+  { timestamps: true },
+);
+verificationChallengeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
 export const Estate = model("Estate", estateSchema);
 export const User = model("User", userSchema);
 export const Resident = model("Resident", residentSchema);
@@ -271,3 +284,4 @@ export const SecurityEvent = model("SecurityEvent", securityEventSchema);
 export const EmergencyAlert = model("EmergencyAlert", emergencyAlertSchema);
 export const EmergencyView = model("EmergencyView", emergencyViewSchema);
 export const BlacklistEntry = model("BlacklistEntry", blacklistEntrySchema);
+export const VerificationChallenge = model("VerificationChallenge", verificationChallengeSchema);
